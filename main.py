@@ -2,7 +2,6 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# === Конфигурация ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
 
@@ -25,40 +24,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# === Пересылка сообщений админу ===
-async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
+# === Основная логика ===
+async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg:
         return
 
-    user = update.message.from_user
-    who = user.username or user.full_name or f"id:{user.id}"
-    text = update.message.text or "(медиа)"
+    user = msg.from_user
 
-    print(f"[LOG] Сообщение от @{who}: {text}")
+    # --- 1️⃣ Если пишет обычный пользователь — пересылаем админу
+    if user.id != ADMIN_ID:
+        who = user.username or user.full_name or f"id:{user.id}"
+        text = msg.text or "(медиа)"
+        print(f"[LOG] Сообщение от @{who}: {text}")
 
-    try:
-        # Пересылаем админу сообщение
-        await context.bot.forward_message(
-            chat_id=ADMIN_ID,
-            from_chat_id=update.message.chat_id,
-            message_id=update.message.message_id
-        )
+        try:
+            # пересылаем админу оригинал
+            forwarded = await context.bot.forward_message(
+                chat_id=ADMIN_ID,
+                from_chat_id=msg.chat_id,
+                message_id=msg.message_id
+            )
 
-        # Добавляем подпись
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"📩 Новое сообщение от @{who} (id: {user.id})"
-        )
+            # подпись
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"📩 Сообщение от @{who} (id: {user.id})",
+                reply_to_message_id=forwarded.message_id
+            )
 
-    except Exception as e:
-        print(f"⚠️ Ошибка при пересылке: {e}")
+        except Exception as e:
+            print(f"⚠️ Ошибка пересылки: {e}")
+
+    # --- 2️⃣ Если пишет админ (ответ на пересланное сообщение)
+    elif msg.reply_to_message and msg.reply_to_message.forward_origin:
+        try:
+            # достаём ID исходного пользователя из origin
+            original_user = msg.reply_to_message.forward_origin.sender_user.id
+            await context.bot.send_message(
+                chat_id=original_user,
+                text=f"{msg.text}"
+            )
+            print(f"[LOG] Ответ от админа отправлен пользователю {original_user}: {msg.text}")
+        except Exception as e:
+            print(f"⚠️ Ошибка при ответе пользователю: {e}")
 
 
-# === Запуск бота ===
+# === Запуск ===
 if __name__ == "__main__":
     print("🚀 Бот запускается...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.ALL, forward_message))
-    print("🤖 Бот запущен. Ожидаю сообщений...")
+    app.add_handler(MessageHandler(filters.ALL, handler))
+    print("🤖 Бот запущен и готов к работе.")
     app.run_polling()
