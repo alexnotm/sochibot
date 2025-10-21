@@ -2,6 +2,7 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
+# === Настройки ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
 
@@ -11,6 +12,8 @@ if not ADMIN_ID.isdigit():
     raise RuntimeError("❌ ADMIN_ID должен быть числом.")
 ADMIN_ID = int(ADMIN_ID)
 
+# Память соответствий: { message_id_админа: user_id_пользователя }
+reply_map = {}
 
 # === Приветствие ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -24,7 +27,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# === Основная логика ===
+# === Основной обработчик ===
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
@@ -32,7 +35,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = msg.from_user
 
-    # --- 1️⃣ Если пишет обычный пользователь — пересылаем админу
+    # --- 1️⃣ Пользователь пишет админу
     if user.id != ADMIN_ID:
         who = user.username or user.full_name or f"id:{user.id}"
         text = msg.text or "(медиа)"
@@ -47,27 +50,40 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             # подпись
-            await context.bot.send_message(
+            caption = f"📩 Сообщение от @{who} (id: {user.id})"
+            note = await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"📩 Сообщение от @{who} (id: {user.id})",
+                text=caption,
                 reply_to_message_id=forwarded.message_id
             )
 
-        except Exception as e:
-            print(f"⚠️ Ошибка пересылки: {e}")
+            # сохраняем связь (ответ админу -> исходный пользователь)
+            reply_map[note.message_id] = user.id
+            reply_map[forwarded.message_id] = user.id
 
-    # --- 2️⃣ Если пишет админ (ответ на пересланное сообщение)
-    elif msg.reply_to_message and msg.reply_to_message.forward_origin:
-        try:
-            # достаём ID исходного пользователя из origin
-            original_user = msg.reply_to_message.forward_origin.sender_user.id
-            await context.bot.send_message(
-                chat_id=original_user,
-                text=f"{msg.text}"
-            )
-            print(f"[LOG] Ответ от админа отправлен пользователю {original_user}: {msg.text}")
         except Exception as e:
-            print(f"⚠️ Ошибка при ответе пользователю: {e}")
+            print(f"⚠️ Ошибка при пересылке: {e}")
+
+    # --- 2️⃣ Админ отвечает пользователю
+    elif msg.reply_to_message:
+        target_id = None
+
+        # пробуем определить ID через карту
+        if msg.reply_to_message.message_id in reply_map:
+            target_id = reply_map[msg.reply_to_message.message_id]
+
+        # пробуем достать напрямую (если forward_origin есть)
+        elif msg.reply_to_message.forward_origin and msg.reply_to_message.forward_origin.sender_user:
+            target_id = msg.reply_to_message.forward_origin.sender_user.id
+
+        if target_id:
+            try:
+                await context.bot.send_message(chat_id=target_id, text=msg.text)
+                print(f"[LOG] Ответ от админа → пользователю {target_id}: {msg.text}")
+            except Exception as e:
+                print(f"⚠️ Ошибка при ответе пользователю {target_id}: {e}")
+        else:
+            print("⚠️ Не удалось определить, кому отправить ответ.")
 
 
 # === Запуск ===
